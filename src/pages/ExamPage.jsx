@@ -1,69 +1,135 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { storage } from '../utils/localStorage';
+import { storage } from '../services/localStorage';
 
 function ExamPage() {
   const { examId } = useParams();
   const navigate = useNavigate();
   const [exam, setExam] = useState(null);
   const [answers, setAnswers] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(null);
 
   useEffect(() => {
-    const examData = storage.getExamById(examId);
-    setExam(examData);
-  }, [examId]);
-
-  const handleSubmit = () => {
-    setSubmitting(true);
-    const score = exam.questions.reduce((total, question) => {
-      return total + (answers[question.id] === question.correct_answer ? 1 : 0);
-    }, 0);
-
-    const percentageScore = (score / exam.questions.length) * 100;
-    const passed = percentageScore >= 50;
-
-    const resultData = {
-      exam_id: examId,
-      exam_title: exam.title,
-      user_name: 'Admin',
-      user_email: 'admin@example.com',
-      answers,
-      score: percentageScore,
-      passed,
-      date: new Date().toISOString(),
+    const fetchExam = async () => {
+      try {
+        const examData = await storage.getExamById(examId);
+        setExam(examData);
+        
+        // Calculate time left
+        const endTime = new Date(examData.endTime).getTime();
+        const now = new Date().getTime();
+        setTimeLeft(Math.max(0, endTime - now));
+      } catch (err) {
+        setError('Failed to load exam');
+      } finally {
+        setLoading(false);
+      }
     };
 
-    storage.saveExamResult(resultData);
-    setResult(resultData);
-    setSubmitting(false);
+    fetchExam();
+  }, [examId]);
+
+  useEffect(() => {
+    if (timeLeft === null) return;
+
+    const timer = setInterval(() => {
+      setTimeLeft((prevTime) => {
+        if (prevTime <= 1000) {
+          clearInterval(timer);
+          handleSubmit();
+          return 0;
+        }
+        return prevTime - 1000;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [timeLeft]);
+
+  const handleSubmit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+
+    try {
+      const totalQuestions = exam.questions.length;
+      let correctAnswers = 0;
+
+      exam.questions.forEach((question) => {
+        if (answers[question._id] === question.correctAnswer) {
+          correctAnswers++;
+        }
+      });
+
+      const score = (correctAnswers / totalQuestions) * 100;
+
+      await storage.saveExamResult({
+        exam_id: examId,
+        score,
+        totalQuestions
+      });
+
+      navigate('/student');
+    } catch (err) {
+      setError('Failed to submit exam');
+      setSubmitting(false);
+    }
   };
 
-  if (!exam) {
-    return <div>Loading exam...</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-xl">Loading exam...</div>
+      </div>
+    );
   }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-red-500">{error}</div>
+      </div>
+    );
+  }
+
+  const formatTime = (ms) => {
+    const minutes = Math.floor(ms / (1000 * 60));
+    const seconds = Math.floor((ms % (1000 * 60)) / 1000);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-4">{exam.title}</h1>
-      <p className="mb-8">{exam.description}</p>
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-2xl font-bold">{exam.title}</h1>
+        <div className="text-xl font-mono">
+          Time Left: {formatTime(timeLeft)}
+        </div>
+      </div>
+
       <div className="space-y-8">
         {exam.questions.map((question, index) => (
-          <div key={question.id} className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-lg font-semibold">
-              Question {index + 1}: {question.question_text}
+          <div key={question._id} className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-lg font-semibold mb-4">
+              Question {index + 1}: {question.title}
             </h2>
-            <div className="mt-4 space-y-2">
-              {question.options.map((option, optionIndex) => (
-                <label key={optionIndex} className="flex items-center space-x-2">
+            <div className="space-y-2">
+              {question.options.map((option, optIndex) => (
+                <label
+                  key={optIndex}
+                  className="flex items-center space-x-3 p-2 rounded hover:bg-gray-50"
+                >
                   <input
                     type="radio"
-                    name={question.id}
+                    name={question._id}
                     value={option}
-                    checked={answers[question.id] === option}
-                    onChange={(e) => setAnswers({ ...answers, [question.id]: e.target.value })}
-                    className="form-radio"
+                    checked={answers[question._id] === option}
+                    onChange={(e) =>
+                      setAnswers({ ...answers, [question._id]: e.target.value })
+                    }
+                    className="form-radio text-indigo-600"
                   />
                   <span>{option}</span>
                 </label>
@@ -72,42 +138,16 @@ function ExamPage() {
           </div>
         ))}
       </div>
-      <button
-        onClick={handleSubmit}
-        disabled={submitting || Object.keys(answers).length !== exam.questions.length}
-        className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-      >
-        {submitting ? 'Submitting...' : 'Submit Exam'}
-      </button>
 
-      {result && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center animate-fade-in"
+      <div className="mt-8 flex justify-end">
+        <button
+          onClick={handleSubmit}
+          disabled={submitting || Object.keys(answers).length !== exam.questions.length}
+          className="bg-indigo-600 text-white px-6 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50"
         >
-          <div
-            className="bg-gradient-to-br from-blue-500 to-purple-600 text-white p-8 rounded-xl shadow-2xl relative max-w-sm w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-2xl font-extrabold mb-4 text-center">Exam Result</h2>
-            <p className="text-lg text-center">
-              <span className="font-semibold">Score:</span> {result.score}%
-            </p>
-            <p
-              className={`text-xl font-semibold mt-4 text-center ${
-                result.passed ? 'text-green-300' : 'text-red-300'
-              }`}
-            >
-              {result.passed ? 'Congratulations, You Passed!' : 'Sorry, You Failed.'}
-            </p>
-            <button
-              onClick={() => navigate('/student')}
-              className="mt-6 bg-white text-blue-600 font-bold px-4 py-2 rounded-lg w-full hover:bg-gray-100"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
+          {submitting ? 'Submitting...' : 'Submit Exam'}
+        </button>
+      </div>
     </div>
   );
 }

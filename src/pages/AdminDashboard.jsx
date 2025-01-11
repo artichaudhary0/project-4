@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Minus, PlusCircle, Trash2, Edit } from 'lucide-react';
-import { storage } from '../utils/localStorage';
+import { storage } from '../services/localStorage';
 
 function AdminDashboard() {
   const [exams, setExams] = useState([]);
